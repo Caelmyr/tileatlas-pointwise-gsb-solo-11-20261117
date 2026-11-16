@@ -6,6 +6,7 @@ from image_lab.validation import Invalid
 from .catalog import Catalog
 from .raster import encode, checker, contact, repeat_preview, seam_report, transform
 from .packing import pack, render, options, sprite_metadata, reconstruct
+from .anim import normalize_clip, clip_metadata, geometry, preview as clip_grid
 from .delivery import atlas_bundle, project_bundle, import_project
 from .demo import create
 
@@ -29,7 +30,7 @@ def install(app, root):
 
     def packed(p, data=None):
         settings = options(data or p['packing'])
-        items = catalog.prepared(p)
+        items = catalog.pack_items(p)
         layout = pack(items,settings)
         return layout, render(layout,items)
 
@@ -114,12 +115,40 @@ def install(app, root):
     def layout(key):
         p=catalog.read(key)
         result,image=packed(p)
-        return jsonify({**result,'revision':p['revision'],'metadata':[sprite_metadata(s,result['size']) for s in result['sprites']]})
+        return jsonify({**result,'revision':p['revision'],'metadata':[sprite_metadata(s,result['size']) for s in result['sprites']],'clips':[clip_metadata(c) for c in p.get('clips',[])]})
+
+    @api.post('/projects/<key>/clips')
+    def add_clip(key):
+        d=body()
+        return jsonify(catalog.add_clip(key,d['revision'],d.get('clip',{}))),201
+
+    @api.patch('/projects/<key>/clips/<cid>')
+    def update_clip(key,cid):
+        d=body()
+        return jsonify(catalog.update_clip(key,cid,d['revision'],d.get('clip',{})))
+
+    @api.delete('/projects/<key>/clips/<cid>')
+    def remove_clip(key,cid):
+        return jsonify(catalog.remove_clip(key,cid,body()['revision']))
+
+    @api.post('/projects/<key>/clip-preview')
+    def clip_preview(key):
+        p=catalog.read(key)
+        sheet=catalog.raw(p,catalog.sprite(p,str(body().get('source',''))))
+        clip=normalize_clip(body(),sheet.size,check_frames=False)
+        geo=geometry(sheet.size,clip['frame'],clip['margin'],clip['spacing'])
+        if request.args.get('image')=='1':
+            response=png(clip_grid(sheet,clip))
+            response.headers['X-Columns']=str(geo['columns'])
+            response.headers['X-Rows']=str(geo['rows'])
+            response.headers['X-Cells']=str(geo['cells'])
+            return response
+        return jsonify(geo)
 
     @api.get('/projects/<key>/atlas.png')
     def atlas(key):
         p=catalog.read(key)
-        items=catalog.prepared(p)
+        items=catalog.pack_items(p)
         result=pack(items,options(p['packing']))
         image=render(result,items,request.args.get('outlines')=='1')
         return png(checker(image) if request.args.get('checker')=='1' else image)

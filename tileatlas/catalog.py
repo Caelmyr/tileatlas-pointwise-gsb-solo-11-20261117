@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from image_lab.validation import Invalid, Conflict
 from .raster import encode, decode, transform, fingerprint
+from .anim import normalize_clip, slice_items, MAX_CLIPS, MAX_ITEMS
 
 
 class Catalog:
@@ -35,7 +36,7 @@ class Catalog:
 
     def create(self, name):
         with self.lock:
-            p = {'id': uuid.uuid4().hex[:24], 'name': str(name).strip()[:100] or '新图集', 'revision': 0, 'created': time.time(), 'sprites': [], 'packing': {'size': 512, 'padding': 2, 'extrude': 1, 'rotate': True}}
+            p = {'id': uuid.uuid4().hex[:24], 'name': str(name).strip()[:100] or '新图集', 'revision': 0, 'created': time.time(), 'sprites': [], 'clips': [], 'packing': {'size': 512, 'padding': 2, 'extrude': 1, 'rotate': True}}
             self.write(p)
             return p
 
@@ -103,18 +104,66 @@ class Catalog:
     def remove(self, key, sid, revision):
         def apply(p):
             self.sprite(p, sid)
+            used = [c['name'] for c in p.get('clips', []) if c['source'] == sid]
+            if used:
+                raise Invalid('该精灵正被动画片段使用：' + '、'.join(used))
             p['sprites'] = [s for s in p['sprites'] if s['id'] != sid]
         return self.change(key, revision, apply)
 
-    def prepared(self, p, selected=None):
+    def sheet_size(self, p, sid):
+        return self.raw(p, self.sprite(p, sid)).size
+
+    def add_clip(self, key, revision, data):
+        def apply(p):
+            clips = p.setdefault('clips', [])
+            if len(clips) >= MAX_CLIPS:
+                raise Invalid(f'每个图集最多{MAX_CLIPS}个动画片段')
+            clip = normalize_clip(data, self.sheet_size(p, str(data.get('source', ''))))
+            clip['id'] = uuid.uuid4().hex[:12]
+            clips.append(clip)
+        return self.change(key, revision, apply)
+
+    def update_clip(self, key, cid, revision, data):
+        def apply(p):
+            clips = p.get('clips', [])
+            index = next((i for i, c in enumerate(clips) if c['id'] == cid), None)
+            if index is None:
+                raise Invalid('动画片段不存在')
+            clip = normalize_clip(data, self.sheet_size(p, str(data.get('source', ''))))
+            clip['id'] = cid
+            clips[index] = clip
+        return self.change(key, revision, apply)
+
+    def remove_clip(self, key, cid, revision):
+        def apply(p):
+            clips = p.get('clips', [])
+            if not any(c['id'] == cid for c in clips):
+                raise Invalid('动画片段不存在')
+            p['clips'] = [c for c in clips if c['id'] != cid]
+        return self.change(key, revision, apply)
+
+    def sprite_items(self, p, selected=None):
         items = []
         for item in p['sprites']:
             if not item['enabled'] or selected is not None and item['id'] not in selected:
                 continue
-            data = transform(self.raw(p, item), item['settings'])
-            items.append({**item, **data})
+            items.append({**item, **transform(self.raw(p, item), item['settings'])})
+        return items
+
+    def prepared(self, p, selected=None):
+        items = self.sprite_items(p, selected)
         if not items:
             raise Invalid('请至少启用一个精灵')
+        return items
+
+    def pack_items(self, p):
+        items = self.sprite_items(p)
+        for clip in p.get('clips', []):
+            items.extend(slice_items(clip, self.raw(p, self.sprite(p, clip['source']))))
+        if not items:
+            raise Invalid('请至少启用一个精灵或动画片段')
+        if len(items) > MAX_ITEMS:
+            raise Invalid(f'精灵与动画帧总数超出预算（{MAX_ITEMS}）')
         return items
 
     def duplicates(self, p):
