@@ -2,11 +2,12 @@ import io
 import hashlib
 import threading
 from flask import Blueprint, request, jsonify, Response, send_file, render_template
-from image_lab.validation import Invalid
+from image_lab.validation import Invalid, number
 from .catalog import Catalog
 from .raster import encode, checker, contact, repeat_preview, seam_report, transform
 from .packing import pack, render, options, sprite_metadata, reconstruct
 from .delivery import atlas_bundle, project_bundle, import_project
+from . import sdf
 from .demo import create
 
 
@@ -137,6 +138,41 @@ def install(app, root):
         p=catalog.read(key)
         result,image=packed(p)
         return download(atlas_bundle(p,result,image),'tileatlas.zip')
+
+    def sdf_packed(p):
+        params=sdf.parameters(request.args)
+        items=[]
+        for s in p['sprites']:
+            if not s['enabled']:
+                continue
+            t=transform(catalog.raw(p,s),{**s['settings'],'trim':False})
+            items.append({**s,**t})
+        if not items:
+            raise Invalid('请至少启用一个精灵')
+        settings={**options(p['packing']),'extrude':0}
+        result,frames=sdf.layout(items,settings,params['threshold'],params['spread'])
+        return params,result,frames
+
+    @api.get('/projects/<key>/sprites/<sid>/sdf.png')
+    def sprite_sdf(key,sid):
+        p=catalog.read(key)
+        s=catalog.sprite(p,sid)
+        params=sdf.parameters(request.args)
+        outline=number(request.args.get('outline',2),'描边宽度',0.5,32)
+        t=transform(catalog.raw(p,s),{**s['settings'],'trim':False})
+        return png(sdf.preview(t['image'],params['threshold'],params['spread'],outline))
+
+    @api.get('/projects/<key>/sdf.png')
+    def sdf_atlas(key):
+        p=catalog.read(key)
+        params,result,frames=sdf_packed(p)
+        return png(sdf.render(result,frames))
+
+    @api.get('/projects/<key>/sdf.zip')
+    def sdf_export(key):
+        p=catalog.read(key)
+        params,result,frames=sdf_packed(p)
+        return download(sdf.bundle(p,result,sdf.render(result,frames),params),'tileatlas-sdf.zip')
 
     @api.get('/projects/<key>/project.zip')
     def archive(key):
