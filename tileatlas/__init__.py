@@ -7,7 +7,8 @@ from .catalog import Catalog
 from .raster import encode, checker, contact, repeat_preview, seam_report, transform
 from .packing import pack, render, options, sprite_metadata, reconstruct
 from .delivery import atlas_bundle, project_bundle, import_project
-from .demo import create
+from .demo import create, create_terrain
+from . import tiling
 
 
 def install(app, root):
@@ -52,6 +53,10 @@ def install(app, root):
     @api.post('/demo')
     def demo():
         return jsonify(create(catalog)),201
+
+    @api.post('/demo-terrain')
+    def demo_terrain():
+        return jsonify(create_terrain(catalog)),201
 
     @api.get('/projects/<key>')
     def project(key):
@@ -131,6 +136,26 @@ def install(app, root):
         if placement is None:
             raise Invalid('精灵未打包')
         return png(reconstruct(image,placement))
+
+    @api.post('/projects/<key>/tilemap')
+    def generate_tilemap(key):
+        d=body()
+        def apply(p):
+            cfg=tiling.map_options(d,p['sprites'])
+            cells=tiling.solve(cfg,tiling.tile_variants(p['sprites']))
+            p['tilemap']={**cfg,'cells':cells}
+        return jsonify(catalog.change(key,d['revision'],apply))
+
+    @api.get('/projects/<key>/tilemap.png')
+    def tilemap_image(key):
+        p=catalog.read(key)
+        tilemap=p.get('tilemap')
+        if not isinstance(tilemap,dict) or not tilemap.get('cells'):
+            raise Invalid('尚未生成拼接地图')
+        wanted={cell['sprite'] for row in tilemap['cells'] for cell in row}
+        images={s['id']:transform(catalog.raw(p,s),s['settings'])['image'] for s in p['sprites'] if s['id'] in wanted}
+        image=tiling.render_map(tilemap,images,grid=request.args.get('grid')=='1')
+        return png(checker(image) if request.args.get('checker')=='1' else image)
 
     @api.get('/projects/<key>/export.zip')
     def export(key):

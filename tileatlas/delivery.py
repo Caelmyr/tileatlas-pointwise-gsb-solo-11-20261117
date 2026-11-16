@@ -15,6 +15,12 @@ def atlas_bundle(p, layout, image):
         archive.writestr('atlas.json', json.dumps(metadata, ensure_ascii=False, indent=2))
         for item in layout['sprites']:
             archive.writestr('reconstructed/' + item['id'] + '.png', encode(reconstruct(image, item)))
+        tiles = [{'id': s['id'], 'name': s['name'], 'edges': s['tile']['edges'], 'rotations': s['tile']['rotations']} for s in p['sprites'] if isinstance(s.get('tile'), dict) and s['tile'].get('enabled')]
+        if tiles:
+            archive.writestr('tiles.json', json.dumps({'format': 'tileatlas-tiles-1', 'tiles': tiles}, ensure_ascii=False, indent=2))
+        tilemap = p.get('tilemap')
+        if isinstance(tilemap, dict) and tilemap.get('cells'):
+            archive.writestr('tilemap.json', json.dumps({'format': 'tileatlas-map-1', **tilemap}, ensure_ascii=False, indent=2))
     return stream.getvalue()
 
 
@@ -44,6 +50,7 @@ def import_project(catalog, raw):
                 raise Invalid('精灵标识重复或数量超限')
             staged = []
             from .raster import fingerprint, transform
+            from .tiling import normalize_tile, validate_stored_map
             for s in sprites:
                 image = decode(archive.read('assets/' + s['asset'] + '.png'))
                 if fingerprint(image) != s['asset']:
@@ -51,10 +58,13 @@ def import_project(catalog, raw):
                 transform(image, s['settings'])
                 if len(s['pivot']) != 2:
                     raise Invalid('项目轴心无效')
+                s['tile'] = normalize_tile(s.get('tile'))
                 staged.append((s['asset'], encode(image)))
+            tilemap = validate_stored_map(p.get('tilemap'), sprites)
             with catalog.lock:
                 created = catalog.create(str(p['name']) + ' · 导入')
                 created['sprites'] = sprites
+                created['tilemap'] = tilemap
                 created['packing'] = p['packing']
                 from .packing import options
                 options(created['packing'])

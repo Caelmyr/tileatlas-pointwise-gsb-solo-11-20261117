@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from image_lab.validation import Invalid, Conflict
 from .raster import encode, decode, transform, fingerprint
+from .tiling import normalize_tile
 
 
 class Catalog:
@@ -35,7 +36,7 @@ class Catalog:
 
     def create(self, name):
         with self.lock:
-            p = {'id': uuid.uuid4().hex[:24], 'name': str(name).strip()[:100] or '新图集', 'revision': 0, 'created': time.time(), 'sprites': [], 'packing': {'size': 512, 'padding': 2, 'extrude': 1, 'rotate': True}}
+            p = {'id': uuid.uuid4().hex[:24], 'name': str(name).strip()[:100] or '新图集', 'revision': 0, 'created': time.time(), 'sprites': [], 'packing': {'size': 512, 'padding': 2, 'extrude': 1, 'rotate': True}, 'tilemap': None}
             self.write(p)
             return p
 
@@ -73,7 +74,7 @@ class Catalog:
             if len(p['sprites']) >= 128:
                 raise Invalid('每图集最多128个精灵')
             (self.directory(key) / (asset + '.png')).write_bytes(encode(image))
-            p['sprites'].append({'id': uuid.uuid4().hex[:24], 'name': str(name)[:100], 'asset': asset, 'original_size': list(image.size), 'pivot': [.5, .5], 'enabled': True, 'tags': [], 'settings': {'trim': True, 'threshold': 0, 'scale': 1, 'turn': 0, 'flip_x': False, 'flip_y': False, 'pixel_art': True}})
+            p['sprites'].append({'id': uuid.uuid4().hex[:24], 'name': str(name)[:100], 'asset': asset, 'original_size': list(image.size), 'pivot': [.5, .5], 'enabled': True, 'tags': [], 'tile': normalize_tile(None), 'settings': {'trim': True, 'threshold': 0, 'scale': 1, 'turn': 0, 'flip_x': False, 'flip_y': False, 'pixel_art': True}})
         return self.change(key, revision, apply)
 
     def update(self, key, sid, revision, data):
@@ -92,6 +93,8 @@ class Catalog:
                 if len(v) != 2 or not all(isinstance(n, (int, float)) and -2 <= n <= 3 for n in v):
                     raise Invalid('轴心为两个-2至3的坐标')
                 item['pivot'] = v
+            if 'tile' in data:
+                item['tile'] = normalize_tile(data['tile'])
             if 'settings' in data:
                 candidate = {**item['settings'], **data['settings']}
                 if not 0 <= int(candidate['threshold']) <= 254:
