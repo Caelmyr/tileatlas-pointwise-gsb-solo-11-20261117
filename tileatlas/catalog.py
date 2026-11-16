@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from image_lab.validation import Invalid, Conflict
 from .raster import encode, decode, transform, fingerprint
+from . import nine as ninegrid
 
 
 class Catalog:
@@ -98,6 +99,8 @@ class Catalog:
                     raise Invalid('透明阈值须为0–254')
                 transform(self.raw(p, item), candidate)
                 item['settings'] = candidate
+            if 'nine' in data:
+                item['nine'] = ninegrid.validate(data['nine'], self.raw(p, item).size)
         return self.change(key, revision, apply)
 
     def remove(self, key, sid, revision):
@@ -111,8 +114,12 @@ class Catalog:
         for item in p['sprites']:
             if not item['enabled'] or selected is not None and item['id'] not in selected:
                 continue
-            data = transform(self.raw(p, item), item['settings'])
-            items.append({**item, **data})
+            raw = self.raw(p, item)
+            data = transform(raw, item['settings'])
+            entry = {**item, **data}
+            if item.get('nine') and item['nine'].get('enabled'):
+                entry['nine_info'] = ninegrid.frame_info(item['nine'], item['settings'], raw.size, data)
+            items.append(entry)
         if not items:
             raise Invalid('请至少启用一个精灵')
         return items

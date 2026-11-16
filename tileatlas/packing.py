@@ -63,7 +63,7 @@ def pack(items, settings):
         _, x, y, aw, ah, rw, rh, rotated = min(choices)
         used = (x, y, aw, ah)
         free = split_free(free, used)
-        placements.append({'id': item['id'], 'name': item['name'], 'x': x + bleed, 'y': y + bleed, 'w': rw, 'h': rh, 'rotated': rotated, 'allocation': list(used), 'bounds': item['bounds'], 'source_size': item['source_size'], 'pivot': item['pivot'], 'empty': item['empty']})
+        placements.append({'id': item['id'], 'name': item['name'], 'x': x + bleed, 'y': y + bleed, 'w': rw, 'h': rh, 'rotated': rotated, 'allocation': list(used), 'bounds': item['bounds'], 'source_size': item['source_size'], 'pivot': item['pivot'], 'empty': item['empty'], 'nine_info': item.get('nine_info')})
     validate(placements, size)
     occupied = sum(p['w'] * p['h'] for p in placements)
     return {'size': size, 'settings': settings, 'sprites': placements, 'occupancy': occupied / (size * size), 'free_rectangles': len(free)}
@@ -106,7 +106,10 @@ def sprite_metadata(placement, size):
     corners = [[x / size, y / size], [(x + w) / size, y / size], [(x + w) / size, (y + h) / size], [x / size, (y + h) / size]]
     if placement['rotated']:
         corners = corners[1:] + corners[:1]
-    return {'id': placement['id'], 'name': placement['name'], 'frame': {'x': x, 'y': y, 'w': w, 'h': h}, 'rotated': placement['rotated'], 'source_size': [source_w, source_h], 'trim': [left, top, right - left, bottom - top], 'pivot': placement['pivot'], 'trimmed_pivot_pixels': [px, py], 'uv_corners': corners, 'empty': placement['empty']}
+    meta = {'id': placement['id'], 'name': placement['name'], 'frame': {'x': x, 'y': y, 'w': w, 'h': h}, 'rotated': placement['rotated'], 'source_size': [source_w, source_h], 'trim': [left, top, right - left, bottom - top], 'pivot': placement['pivot'], 'trimmed_pivot_pixels': [px, py], 'uv_corners': corners, 'empty': placement['empty']}
+    if placement.get('nine_info'):
+        meta['nine'] = placement['nine_info']
+    return meta
 
 
 def reconstruct(atlas, placement):

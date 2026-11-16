@@ -44,6 +44,7 @@ def import_project(catalog, raw):
                 raise Invalid('精灵标识重复或数量超限')
             staged = []
             from .raster import fingerprint, transform
+            from . import nine as ninegrid
             for s in sprites:
                 image = decode(archive.read('assets/' + s['asset'] + '.png'))
                 if fingerprint(image) != s['asset']:
@@ -51,6 +52,8 @@ def import_project(catalog, raw):
                 transform(image, s['settings'])
                 if len(s['pivot']) != 2:
                     raise Invalid('项目轴心无效')
+                if s.get('nine') is not None:
+                    s['nine'] = ninegrid.validate(s['nine'], image.size)
                 staged.append((s['asset'], encode(image)))
             with catalog.lock:
                 created = catalog.create(str(p['name']) + ' · 导入')

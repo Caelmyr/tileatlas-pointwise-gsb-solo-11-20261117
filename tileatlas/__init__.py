@@ -8,6 +8,7 @@ from .raster import encode, checker, contact, repeat_preview, seam_report, trans
 from .packing import pack, render, options, sprite_metadata, reconstruct
 from .delivery import atlas_bundle, project_bundle, import_project
 from .demo import create
+from . import nine as ninegrid
 
 
 def install(app, root):
@@ -98,8 +99,23 @@ def install(app, root):
     def inspect(key,sid):
         p=catalog.read(key)
         s=catalog.sprite(p,sid)
-        t=transform(catalog.raw(p,s),s['settings'])
-        return jsonify({'id':sid,'bounds':t['bounds'],'source_size':t['source_size'],'cropped_size':list(t['image'].size),'empty':t['empty'],'seams':seam_report(t['image'])})
+        raw=catalog.raw(p,s)
+        t=transform(raw,s['settings'])
+        result={'id':sid,'bounds':t['bounds'],'source_size':t['source_size'],'cropped_size':list(t['image'].size),'empty':t['empty'],'seams':seam_report(t['image'])}
+        if s.get('nine') and s['nine'].get('enabled'):
+            result['nine']=ninegrid.frame_info(s['nine'],s['settings'],raw.size,t)
+        return jsonify(result)
+
+    @api.get('/projects/<key>/sprites/<sid>/nine.png')
+    def nine_preview(key,sid):
+        p=catalog.read(key)
+        s=catalog.sprite(p,sid)
+        raw=catalog.raw(p,s)
+        t=transform(raw,s['settings'])
+        config=ninegrid.merged(s.get('nine'),request.args,raw.size)
+        info=ninegrid.frame_info(config,s['settings'],raw.size,t)
+        image=ninegrid.render(t['image'],info,config['target'],s['settings'].get('pixel_art',True))
+        return png(checker(image) if request.args.get('checker')=='1' else image)
 
     @api.get('/projects/<key>/duplicates')
     def duplicates(key):
