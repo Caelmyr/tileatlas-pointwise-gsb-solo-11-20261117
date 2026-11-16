@@ -1,7 +1,8 @@
 import math
-from PIL import Image, ImageDraw
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 from image_lab.validation import Invalid
-from .raster import extrude
+from .raster import extrude, color_fill
 
 
 def intersects(a, b):
@@ -38,9 +39,10 @@ def options(data):
         raise Invalid('图集边长支持128、256、512、1024、2048')
     pad = int(data.get('padding', 2))
     bleed = int(data.get('extrude', 1))
-    if not 0 <= pad <= 16 or not 0 <= bleed <= 8:
-        raise Invalid('间距须0–16，外扩须0–8')
-    return {'size': size, 'padding': pad, 'extrude': bleed, 'rotate': bool(data.get('rotate', True))}
+    fill = int(data.get('fill', 0))
+    if not 0 <= pad <= 16 or not 0 <= bleed <= 8 or not 0 <= fill <= 8:
+        raise Invalid('间距须0–16，外扩与颜色填充须0–8')
+    return {'size': size, 'padding': pad, 'extrude': bleed, 'fill': fill, 'rotate': bool(data.get('rotate', True))}
 
 
 def pack(items, settings):
@@ -66,7 +68,9 @@ def pack(items, settings):
         placements.append({'id': item['id'], 'name': item['name'], 'x': x + bleed, 'y': y + bleed, 'w': rw, 'h': rh, 'rotated': rotated, 'allocation': list(used), 'bounds': item['bounds'], 'source_size': item['source_size'], 'pivot': item['pivot'], 'empty': item['empty']})
     validate(placements, size)
     occupied = sum(p['w'] * p['h'] for p in placements)
-    return {'size': size, 'settings': settings, 'sprites': placements, 'occupancy': occupied / (size * size), 'free_rectangles': len(free)}
+    requested = settings.get('fill', 0)
+    effective = min(requested, gap + bleed)
+    return {'size': size, 'settings': {**settings, 'fill': effective}, 'fill_requested': requested, 'sprites': placements, 'occupancy': occupied / (size * size), 'free_rectangles': len(free)}
 
 
 def validate(placements, size):
@@ -83,10 +87,13 @@ def render(layout, items, outlines=False):
     lookup = {item['id']: item for item in items}
     out = Image.new('RGBA', (layout['size'], layout['size']))
     bleed = layout['settings']['extrude']
+    fill = layout['settings'].get('fill', 0)
     for placement in layout['sprites']:
         image = lookup[placement['id']]['image']
         if placement['rotated']:
             image = image.transpose(Image.Transpose.ROTATE_270)
+        if fill:
+            image = color_fill(image, fill)
         extended = extrude(image, bleed)
         out.paste(extended, (placement['x'] - bleed, placement['y'] - bleed))
     if outlines:
@@ -116,4 +123,41 @@ def reconstruct(atlas, placement):
         crop = crop.transpose(Image.Transpose.ROTATE_90)
     out = Image.new('RGBA', tuple(placement['source_size']))
     out.paste(crop, tuple(placement['bounds'][:2]))
+    return out
+
+
+def label_font(size=15):
+    try:
+        return ImageFont.truetype(str(Path(__file__).resolve().parents[1] / 'static' / 'archive-font.ttf'), size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def straight_minify(image, size):
+    # 游戏纹理是straight-alpha双线性采样，需逐通道缩放；Pillow的RGBA缩放会预乘alpha
+    return Image.merge('RGBA', [band.resize(size, Image.Resampling.BILINEAR) for band in image.split()])
+
+
+def filter_comparison(layout, items, scale=0.5):
+    if not 0.05 <= scale <= 1:
+        raise Invalid('预览缩放须在0.05–1之间')
+    cell = max(1, round(layout['size'] * scale))
+    if 2 * cell + 36 > 4096:
+        raise Invalid('预览超出预算，请减小缩放比例')
+    off = {**layout, 'settings': {**layout['settings'], 'fill': 0}}
+    digits = str.maketrans('0123456789', '０１２３４５６７８９')  # 内置字体不含半角数字
+    on_label = '填充开启%s像素' % str(layout['settings'].get('fill', 0)).translate(digits)
+    variants = [('填充关闭', off), (on_label, layout)]
+    rendered = [render(variant, items) for _, variant in variants]
+    out = Image.new('RGBA', (2 * cell + 36, 2 * cell + 66), '#1c2635')
+    draw = ImageDraw.Draw(out)
+    font = label_font()
+    for row, (background, title) in enumerate((('#24262b', '深色背景'), ('#f5f5f5', '浅色背景'))):
+        for col in range(2):
+            scaled = straight_minify(rendered[col], (cell, cell))
+            panel = Image.new('RGBA', (cell, cell), background)
+            panel.alpha_composite(scaled)
+            x, y = 12 + col * (cell + 12), 30 + row * (cell + 30)
+            out.alpha_composite(panel, (x, y))
+            draw.text((x + 2, y - 20), title + '／' + variants[col][0], font=font, fill='white')
     return out

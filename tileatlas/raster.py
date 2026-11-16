@@ -80,6 +80,47 @@ def extrude(image, border):
     return Image.fromarray(np.pad(data, ((border, border), (border, border), (0, 0)), mode='edge'), 'RGBA')
 
 
+def color_fill(image, distance):
+    # 把有色像素的RGB逐轮传播进完全透明的像素；alpha与有色像素的RGB保持不变
+    data = np.array(image)
+    if distance < 1:
+        return Image.fromarray(data, 'RGBA')
+    known = data[:, :, 3] > 0
+    if known.all() or not known.any():
+        return Image.fromarray(data, 'RGBA')
+    distance = int(distance)
+    # 传播不超出有色像素包围盒外扩distance的范围，只在该窗口内计算
+    ys, xs = np.nonzero(known)
+    y0, y1 = max(0, ys.min() - distance), min(known.shape[0], ys.max() + distance + 1)
+    x0, x1 = max(0, xs.min() - distance), min(known.shape[1], xs.max() + distance + 1)
+    rgb = data[y0:y1, x0:x1, :3].astype(np.float32)
+    known = known[y0:y1, x0:x1].copy()
+    weight = known.astype(np.float32)
+    height, width = known.shape
+    for _ in range(distance):
+        padded_rgb = np.pad(rgb, ((1, 1), (1, 1), (0, 0)))
+        padded_weight = np.pad(weight, ((1, 1), (1, 1)))
+        total = np.zeros_like(rgb)
+        count = np.zeros_like(weight)
+        for dy in range(3):
+            for dx in range(3):
+                if dy == 1 and dx == 1:
+                    continue
+                w = padded_weight[dy:dy + height, dx:dx + width]
+                total += padded_rgb[dy:dy + height, dx:dx + width] * w[:, :, None]
+                count += w
+        frontier = ~known & (count > 0)
+        if not frontier.any():
+            break
+        rgb[frontier] = total[frontier] / count[frontier, None]
+        known |= frontier
+        weight[frontier] = 1
+    window = data[y0:y1, x0:x1]
+    transparent = window[:, :, 3] == 0
+    window[:, :, :3] = np.where(transparent[:, :, None], np.rint(rgb).astype(np.uint8), window[:, :, :3])
+    return Image.fromarray(data, 'RGBA')
+
+
 def contact(images, labels, columns=4, cell=160):
     rows = max(1, math.ceil(len(images) / columns))
     out = Image.new('RGBA', (columns * cell, rows * (cell + 24)), '#1c2635')

@@ -35,7 +35,7 @@ class Catalog:
 
     def create(self, name):
         with self.lock:
-            p = {'id': uuid.uuid4().hex[:24], 'name': str(name).strip()[:100] or '新图集', 'revision': 0, 'created': time.time(), 'sprites': [], 'packing': {'size': 512, 'padding': 2, 'extrude': 1, 'rotate': True}}
+            p = {'id': uuid.uuid4().hex[:24], 'name': str(name).strip()[:100] or '新图集', 'revision': 0, 'created': time.time(), 'sprites': [], 'packing': {'size': 512, 'padding': 2, 'extrude': 1, 'fill': 0, 'rotate': True}}
             self.write(p)
             return p
 

@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify, Response, send_file, render_templ
 from image_lab.validation import Invalid
 from .catalog import Catalog
 from .raster import encode, checker, contact, repeat_preview, seam_report, transform
-from .packing import pack, render, options, sprite_metadata, reconstruct
+from .packing import pack, render, options, sprite_metadata, reconstruct, filter_comparison
 from .delivery import atlas_bundle, project_bundle, import_project
 from .demo import create
 
@@ -123,6 +123,23 @@ def install(app, root):
         result=pack(items,options(p['packing']))
         image=render(result,items,request.args.get('outlines')=='1')
         return png(checker(image) if request.args.get('checker')=='1' else image)
+
+    @api.get('/projects/<key>/filter-preview.png')
+    def filter_preview(key):
+        p=catalog.read(key)
+        data=dict(p['packing'])
+        if 'fill' in request.args:
+            try:
+                data['fill']=int(request.args['fill'])
+            except ValueError:
+                raise Invalid('颜色填充须为整数')
+        try:
+            scale=float(request.args.get('scale',0.5))
+        except ValueError:
+            raise Invalid('预览缩放需要数字')
+        items=catalog.prepared(p)
+        layout=pack(items,options(data))
+        return png(filter_comparison(layout,items,scale))
 
     @api.get('/projects/<key>/reconstructed/<sid>.png')
     def reconstructed(key,sid):
