@@ -8,6 +8,7 @@ from .raster import encode, checker, contact, repeat_preview, seam_report, trans
 from .packing import pack, render, options, sprite_metadata, reconstruct
 from .delivery import atlas_bundle, project_bundle, import_project
 from .demo import create
+from . import seams as seamdiag
 
 
 def install(app, root):
@@ -100,6 +101,35 @@ def install(app, root):
         s=catalog.sprite(p,sid)
         t=transform(catalog.raw(p,s),s['settings'])
         return jsonify({'id':sid,'bounds':t['bounds'],'source_size':t['source_size'],'cropped_size':list(t['image'].size),'empty':t['empty'],'seams':seam_report(t['image'])})
+
+    def sprite_transform(key,sid):
+        p=catalog.read(key)
+        s=catalog.sprite(p,sid)
+        return p,s,transform(catalog.raw(p,s),s['settings'])
+
+    def seam_context(key,sid):
+        p,s,t=sprite_transform(key,sid)
+        ctx=seamdiag.analyze(t['image'],seamdiag.parse_options(request.args))
+        meta={'id':sid,'name':s['name'],'bounds':t['bounds'],'source_size':t['source_size'],'empty':t['empty']}
+        return p,t,ctx,meta
+
+    @api.get('/projects/<key>/sprites/<sid>/seams')
+    def sprite_seams(key,sid):
+        p,t,ctx,meta=seam_context(key,sid)
+        return jsonify(seamdiag.report(ctx,t['image'],meta))
+
+    @api.get('/projects/<key>/sprites/<sid>/seams/<kind>.png')
+    def sprite_seam_image(key,sid,kind):
+        if kind not in seamdiag.KINDS:
+            raise Invalid('未知诊断图类型，支持：'+', '.join(seamdiag.KINDS))
+        p,t,ctx,meta=seam_context(key,sid)
+        return png(seamdiag.render(ctx,t['image'],kind))
+
+    @api.get('/projects/<key>/sprites/<sid>/seams.zip')
+    def sprite_seam_bundle(key,sid):
+        p,t,ctx,meta=seam_context(key,sid)
+        meta={**meta,'project':p['name'],'revision':p['revision']}
+        return download(seamdiag.bundle(ctx,t['image'],meta),'tileatlas-seams.zip')
 
     @api.get('/projects/<key>/duplicates')
     def duplicates(key):
