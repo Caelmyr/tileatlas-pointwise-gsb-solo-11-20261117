@@ -8,7 +8,7 @@ from .packing import sprite_metadata, reconstruct
 
 
 def atlas_bundle(p, layout, image):
-    metadata = {'format': 'tileatlas-1', 'project': p['name'], 'revision': p['revision'], 'image': 'atlas.png', 'size': [layout['size'], layout['size']], 'sprites': [sprite_metadata(item, layout['size']) for item in layout['sprites']]}
+    metadata = {'format': 'tileatlas-1', 'project': p['name'], 'revision': p['revision'], 'mode': layout.get('mode'), 'image': 'atlas.png', 'size': [layout['size'], layout['size']], 'sprites': [sprite_metadata(item, layout['size']) for item in layout['sprites']]}
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('atlas.png', encode(image))
@@ -22,6 +22,9 @@ def project_bundle(catalog, p):
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('project.json', json.dumps(p, ensure_ascii=False))
+        layout = catalog.read_layout(p['id'])
+        if layout:
+            archive.writestr('layout.json', json.dumps(layout, ensure_ascii=False))
         for asset in sorted({s['asset'] for s in p['sprites']}):
             raw = (catalog.directory(p['id']) / (asset + '.png')).read_bytes()
             archive.writestr('assets/' + asset + '.png', raw)
@@ -34,7 +37,7 @@ def import_project(catalog, raw):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             infos = archive.infolist()
-            if len(infos) > 130 or sum(i.file_size for i in infos) > 128 * 1024 * 1024:
+            if len(infos) > 131 or sum(i.file_size for i in infos) > 128 * 1024 * 1024:
                 raise Invalid('项目包展开后超出预算')
             if len({i.filename for i in infos}) != len(infos):
                 raise Invalid('项目包含重复成员')
@@ -42,6 +45,8 @@ def import_project(catalog, raw):
             sprites = p['sprites']
             if len(sprites) > 128 or len({s['id'] for s in sprites}) != len(sprites):
                 raise Invalid('精灵标识重复或数量超限')
+            if 'locked' in p and (not isinstance(p['locked'], list) or any(sid not in {s['id'] for s in sprites} for sid in p['locked'])):
+                raise Invalid('项目锁定清单无效')
             staged = []
             from .raster import fingerprint, transform
             for s in sprites:
@@ -52,14 +57,22 @@ def import_project(catalog, raw):
                 if len(s['pivot']) != 2:
                     raise Invalid('项目轴心无效')
                 staged.append((s['asset'], encode(image)))
+            layout = None
+            if 'layout.json' in archive.namelist():
+                layout = json.loads(archive.read('layout.json'))
+                if not isinstance(layout.get('placements'), list) or len(layout['placements']) > 128:
+                    raise Invalid('项目布局快照无效')
             with catalog.lock:
                 created = catalog.create(str(p['name']) + ' · 导入')
                 created['sprites'] = sprites
                 created['packing'] = p['packing']
+                created['locked'] = p.get('locked', [])
                 from .packing import options
                 options(created['packing'])
                 for asset, data in staged:
                     (catalog.directory(created['id']) / (asset + '.png')).write_bytes(data)
+                if layout:
+                    catalog.write_layout(created['id'], layout)
                 catalog.write(created)
                 return created
     except (KeyError, ValueError, TypeError, zipfile.BadZipFile) as error:

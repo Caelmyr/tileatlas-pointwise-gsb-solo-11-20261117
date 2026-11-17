@@ -1,11 +1,10 @@
+import copy
 import io
-import hashlib
-import threading
 from flask import Blueprint, request, jsonify, Response, send_file, render_template
 from image_lab.validation import Invalid
 from .catalog import Catalog
 from .raster import encode, checker, contact, repeat_preview, seam_report, transform
-from .packing import pack, render, options, sprite_metadata, reconstruct
+from .packing import render, options, reconstruct, metadata_of, LayoutBlocked
 from .delivery import atlas_bundle, project_bundle, import_project
 from .demo import create
 
@@ -27,11 +26,33 @@ def install(app, root):
     def download(raw,name):
         return send_file(io.BytesIO(raw),download_name=name,as_attachment=True,mimetype='application/zip')
 
-    def packed(p, data=None):
-        settings = options(data or p['packing'])
-        items = catalog.prepared(p)
-        layout = pack(items,settings)
-        return layout, render(layout,items)
+    def query():
+        packing = request.get_json(silent=True)
+        packing = packing.get('packing') if isinstance(packing, dict) else None
+        return {'mode': request.args.get('mode', 'preserve'), 'packing': packing}
+
+    def shown(key):
+        """The pending preview when one is waiting, else the live resolved layout."""
+        p = catalog.read(key)
+        pending = catalog.pending(p)
+        if pending is not None and request.args.get('pending', '1') == '1':
+            layout = copy.deepcopy(pending['layout'])
+            layout['pending'] = True
+            return p, layout
+        layout = catalog.resolve(p, query())
+        layout['pending'] = False
+        return p, layout
+
+    def packed(key):
+        p, layout = shown(key)
+        return p, layout, render(layout, catalog.prepared(p))
+
+    def with_metadata(layout):
+        return {**layout, 'metadata': metadata_of(layout)}
+
+    @app.errorhandler(LayoutBlocked)
+    def blocked(error):
+        return jsonify({'error':str(error),'type':'layout_blocked','blockers':error.blockers}),409
 
     @app.get('/')
     def home():
@@ -55,7 +76,8 @@ def install(app, root):
 
     @api.get('/projects/<key>')
     def project(key):
-        return jsonify(catalog.read(key))
+        p=catalog.read(key)
+        return jsonify({**p,'layout':catalog.read_layout(key),'pending':bool(catalog.pending(p)),'layout_fresh':catalog.layout_fresh(p)})
 
     @api.patch('/projects/<key>')
     def update_project(key):
@@ -67,12 +89,27 @@ def install(app, root):
                 p['packing']=options(d['packing'])
         return jsonify(catalog.change(key,d['revision'],apply))
 
+    @api.post('/projects/<key>/lock')
+    def set_locks(key):
+        d=body()
+        if 'ids' not in d:
+            raise Invalid('请给出锁定精灵清单')
+        ids = d['ids'] if isinstance(d['ids'], list) else [d.get('id')]
+        return jsonify(catalog.set_locked(key,d['revision'],[str(sid) for sid in ids],d.get('locked',True)))
+
     @api.post('/projects/<key>/sprites')
     def add(key):
         file=request.files.get('file')
         if not file:
             raise Invalid('请选择图像')
         return jsonify(catalog.add(key,int(request.form['revision']),file.read(),request.form.get('name',file.filename))),201
+
+    @api.post('/projects/<key>/sprites/<sid>/replace')
+    def replace(key,sid):
+        file=request.files.get('file')
+        if not file:
+            raise Invalid('请选择替换图像')
+        return jsonify(catalog.replace(key,sid,int(request.form['revision']),file.read(),request.form.get('name')))
 
     @api.patch('/projects/<key>/sprites/<sid>')
     def update(key,sid):
@@ -112,21 +149,48 @@ def install(app, root):
 
     @api.get('/projects/<key>/layout')
     def layout(key):
-        p=catalog.read(key)
-        result,image=packed(p)
-        return jsonify({**result,'revision':p['revision'],'metadata':[sprite_metadata(s,result['size']) for s in result['sprites']]})
+        p, result = shown(key)
+        return jsonify({**result,'revision':p['revision'],'metadata':metadata_of(result)})
+
+    @api.post('/projects/<key>/layout/preview')
+    def preview(key):
+        return jsonify(with_metadata(catalog.stage(key,body())))
+
+    @api.post('/projects/<key>/layout/confirm')
+    def confirm(key):
+        result = catalog.confirm(key,body())
+        result['layout'] = with_metadata(result['layout'])
+        return jsonify(result)
+
+    @api.delete('/projects/<key>/layout/pending')
+    def discard(key):
+        return jsonify(catalog.discard(key))
+
+    @api.post('/projects/<key>/layout/repack')
+    def repack(key):
+        """Full repack: one explicit decision, but still previewed and confirmed."""
+        d=body()
+        return jsonify(with_metadata(catalog.stage(key,{**d,'mode':'repack'})))
+
+    @api.post('/projects/<key>/layout/repack/confirm')
+    def repack_confirm(key):
+        result = catalog.repack_confirm(key,body())
+        result['layout'] = with_metadata(result['layout'])
+        return jsonify(result)
+
+    @api.delete('/projects/<key>/layout')
+    def forget(key):
+        return jsonify(catalog.reset_layout(key,int(request.args.get('revision',-1))))
 
     @api.get('/projects/<key>/atlas.png')
     def atlas(key):
-        p=catalog.read(key)
-        items=catalog.prepared(p)
-        result=pack(items,options(p['packing']))
-        image=render(result,items,request.args.get('outlines')=='1')
+        p, layout = shown(key)
+        image = render(layout, catalog.prepared(p), request.args.get('outlines')=='1')
         return png(checker(image) if request.args.get('checker')=='1' else image)
 
     @api.get('/projects/<key>/reconstructed/<sid>.png')
     def reconstructed(key,sid):
-        result,image=packed(catalog.read(key))
+        _,result,image=packed(key)
         placement=next((s for s in result['sprites'] if s['id']==sid),None)
         if placement is None:
             raise Invalid('精灵未打包')
@@ -134,8 +198,11 @@ def install(app, root):
 
     @api.get('/projects/<key>/export.zip')
     def export(key):
-        p=catalog.read(key)
-        result,image=packed(p)
+        p,result,image=packed(key)
+        if request.args.get('pending','1')=='1' and catalog.pending(p):
+            raise Invalid('还有未确认的布局预览；请先确认，或明确选择完全重排后再导出')
+        if catalog.read_layout(key) is None:
+            raise Invalid('尚无已确认布局，请先生成预览并确认')
         return download(atlas_bundle(p,result,image),'tileatlas.zip')
 
     @api.get('/projects/<key>/project.zip')
