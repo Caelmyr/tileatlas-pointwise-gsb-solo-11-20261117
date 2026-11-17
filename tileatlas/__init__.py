@@ -1,12 +1,14 @@
 import io
+import json
 import hashlib
 import threading
 from flask import Blueprint, request, jsonify, Response, send_file, render_template
-from image_lab.validation import Invalid
+from image_lab.validation import Invalid, integer, number
 from .catalog import Catalog
 from .raster import encode, checker, contact, repeat_preview, seam_report, transform
 from .packing import pack, render, options, sprite_metadata, reconstruct
 from .delivery import atlas_bundle, project_bundle, import_project
+from .mesh import describe, document, generate as mesh_generate, preview as mesh_preview, overlay as mesh_overlay, bundle as mesh_bundle
 from .demo import create
 
 
@@ -31,7 +33,20 @@ def install(app, root):
         settings = options(data or p['packing'])
         items = catalog.prepared(p)
         layout = pack(items,settings)
-        return layout, render(layout,items)
+        return layout, render(layout,items), items
+
+    def placement(layout, sid):
+        found = next((s for s in layout['sprites'] if s['id'] == sid), None)
+        if found is None:
+            raise Invalid('精灵未打包')
+        return found
+
+    def solo(p, s):
+        mesh = s.get('mesh') or {}
+        threshold = mesh.get('threshold', 0) if 'threshold' not in request.args else integer(request.args['threshold'], '轮廓阈值', 0, 254)
+        simplify = mesh.get('simplify', 0) if 'simplify' not in request.args else number(request.args['simplify'], '简化程度', 0, 8)
+        item = catalog.prepared({**p, 'sprites': [{**s, 'enabled': True}]})[0]
+        return mesh_generate(item['image'], threshold, simplify), item
 
     @app.get('/')
     def home():
@@ -113,30 +128,58 @@ def install(app, root):
     @api.get('/projects/<key>/layout')
     def layout(key):
         p=catalog.read(key)
-        result,image=packed(p)
+        result,image,items=packed(p)
         return jsonify({**result,'revision':p['revision'],'metadata':[sprite_metadata(s,result['size']) for s in result['sprites']]})
 
     @api.get('/projects/<key>/atlas.png')
     def atlas(key):
         p=catalog.read(key)
-        items=catalog.prepared(p)
-        result=pack(items,options(p['packing']))
-        image=render(result,items,request.args.get('outlines')=='1')
+        result,image,items=packed(p)
+        meshes=[document(s,placement(result,s['id']),result['size']) for s in items if s['mesh']['enabled']]
+        if request.args.get('outlines')=='1':
+            image=render(result,items,True)
+        if request.args.get('meshes')=='1' and meshes:
+            image=mesh_overlay(image,meshes)
         return png(checker(image) if request.args.get('checker')=='1' else image)
+
+    @api.get('/projects/<key>/sprites/<sid>/mesh')
+    def sprite_mesh(key,sid):
+        p=catalog.read(key)
+        result,image,items=packed(p)
+        item=next((s for s in items if s['id']==sid),None)
+        if item is None:
+            raise Invalid('精灵未参与打包')
+        return jsonify(document(item,placement(result,sid),result['size']))
+
+    @api.get('/projects/<key>/sprites/<sid>/mesh.png')
+    def sprite_mesh_preview(key,sid):
+        p=catalog.read(key)
+        result,item=solo(p,catalog.sprite(p,sid))
+        return png(mesh_preview(item['image'],result['threshold'],result['simplify']))
+
+    @api.get('/projects/<key>/sprites/<sid>/mesh/report')
+    def sprite_mesh_report(key,sid):
+        p=catalog.read(key)
+        s=catalog.sprite(p,sid)
+        result,item=solo(p,s)
+        return jsonify({**describe(result),'id':sid,'name':s['name'],'image_size':list(item['image'].size)})
 
     @api.get('/projects/<key>/reconstructed/<sid>.png')
     def reconstructed(key,sid):
-        result,image=packed(catalog.read(key))
-        placement=next((s for s in result['sprites'] if s['id']==sid),None)
-        if placement is None:
-            raise Invalid('精灵未打包')
-        return png(reconstruct(image,placement))
+        result,image,items=packed(catalog.read(key))
+        return png(reconstruct(image,placement(result,sid)))
+
+    @api.get('/projects/<key>/meshes.json')
+    def meshes(key):
+        p=catalog.read(key)
+        result,image,items=packed(p)
+        return Response(json.dumps({'format':'tileatlas-mesh-1','image':'atlas.png','size':[result['size'],result['size']],'sprites':mesh_bundle(items,result)},ensure_ascii=False,indent=2),mimetype='application/json',headers={'Content-Disposition':'attachment; filename=meshes.json'})
 
     @api.get('/projects/<key>/export.zip')
     def export(key):
         p=catalog.read(key)
-        result,image=packed(p)
-        return download(atlas_bundle(p,result,image),'tileatlas.zip')
+        result,image,items=packed(p)
+        return download(atlas_bundle(p,result,image,items),'tileatlas.zip')
 
     @api.get('/projects/<key>/project.zip')
     def archive(key):

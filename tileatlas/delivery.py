@@ -5,14 +5,21 @@ import hashlib
 from image_lab.validation import Invalid
 from .raster import encode, decode
 from .packing import sprite_metadata, reconstruct
+from .mesh import bundle as mesh_bundle, normalize as mesh_settings
 
 
-def atlas_bundle(p, layout, image):
-    metadata = {'format': 'tileatlas-1', 'project': p['name'], 'revision': p['revision'], 'image': 'atlas.png', 'size': [layout['size'], layout['size']], 'sprites': [sprite_metadata(item, layout['size']) for item in layout['sprites']]}
+def atlas_bundle(p, layout, image, items=None):
+    grid = [sprite_metadata(item, layout['size']) for item in layout['sprites']]
+    meshes = mesh_bundle(items, layout) if items is not None else []
+    metadata = {'format': 'tileatlas-1', 'project': p['name'], 'revision': p['revision'], 'image': 'atlas.png', 'size': [layout['size'], layout['size']], 'sprites': grid}
+    if meshes:
+        metadata['mesh'] = {'format': 'tileatlas-mesh-1', 'file': 'meshes.json', 'count': len(meshes), 'sprites': [{'id': item['id'], 'name': item['name'], 'empty': item['empty'], 'vertices': len(item['mesh']['vertices']), 'triangles': len(item['mesh']['triangles']), 'loops': item['mesh']['loops'], 'islands': item['mesh']['islands'], 'holes': item['mesh']['holes']} for item in meshes]}
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w', zipfile.ZIP_DEFLATED) as archive:
         archive.writestr('atlas.png', encode(image))
         archive.writestr('atlas.json', json.dumps(metadata, ensure_ascii=False, indent=2))
+        if meshes:
+            archive.writestr('meshes.json', json.dumps({'format': 'tileatlas-mesh-1', 'image': 'atlas.png', 'size': [layout['size'], layout['size']], 'sprites': meshes}, ensure_ascii=False, indent=2))
         for item in layout['sprites']:
             archive.writestr('reconstructed/' + item['id'] + '.png', encode(reconstruct(image, item)))
     return stream.getvalue()
@@ -51,6 +58,7 @@ def import_project(catalog, raw):
                 transform(image, s['settings'])
                 if len(s['pivot']) != 2:
                     raise Invalid('项目轴心无效')
+                s['mesh'] = mesh_settings(s.get('mesh'))
                 staged.append((s['asset'], encode(image)))
             with catalog.lock:
                 created = catalog.create(str(p['name']) + ' · 导入')

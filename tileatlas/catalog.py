@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from image_lab.validation import Invalid, Conflict
 from .raster import encode, decode, transform, fingerprint
+from .mesh import normalize as mesh_settings
 
 
 class Catalog:
@@ -73,7 +74,7 @@ class Catalog:
             if len(p['sprites']) >= 128:
                 raise Invalid('每图集最多128个精灵')
             (self.directory(key) / (asset + '.png')).write_bytes(encode(image))
-            p['sprites'].append({'id': uuid.uuid4().hex[:24], 'name': str(name)[:100], 'asset': asset, 'original_size': list(image.size), 'pivot': [.5, .5], 'enabled': True, 'tags': [], 'settings': {'trim': True, 'threshold': 0, 'scale': 1, 'turn': 0, 'flip_x': False, 'flip_y': False, 'pixel_art': True}})
+            p['sprites'].append({'id': uuid.uuid4().hex[:24], 'name': str(name)[:100], 'asset': asset, 'original_size': list(image.size), 'pivot': [.5, .5], 'enabled': True, 'tags': [], 'settings': {'trim': True, 'threshold': 0, 'scale': 1, 'turn': 0, 'flip_x': False, 'flip_y': False, 'pixel_art': True}, 'mesh': mesh_settings(None)})
         return self.change(key, revision, apply)
 
     def update(self, key, sid, revision, data):
@@ -98,6 +99,10 @@ class Catalog:
                     raise Invalid('透明阈值须为0–254')
                 transform(self.raw(p, item), candidate)
                 item['settings'] = candidate
+            if 'mesh' in data:
+                if not isinstance(data['mesh'], dict):
+                    raise Invalid('网格参数需要对象')
+                item['mesh'] = mesh_settings({**item.get('mesh', {}), **data['mesh']})
         return self.change(key, revision, apply)
 
     def remove(self, key, sid, revision):
@@ -112,7 +117,7 @@ class Catalog:
             if not item['enabled'] or selected is not None and item['id'] not in selected:
                 continue
             data = transform(self.raw(p, item), item['settings'])
-            items.append({**item, **data})
+            items.append({**item, 'mesh': mesh_settings(item.get('mesh')), **data})
         if not items:
             raise Invalid('请至少启用一个精灵')
         return items
